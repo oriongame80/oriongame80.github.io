@@ -857,6 +857,6 @@ async function main() {
 
     clear_log();
     // path to your script that will use the exploit
-    import('./payload.jar');
+    import('./LapseC.class');
 }
 main();
